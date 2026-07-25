@@ -1,0 +1,28 @@
+# Simulation outputs
+*.vcd
+*.lxt
+*.fst
+*_sim
+*.out
+
+# Vivado
+*.jou
+*.log
+.Xil/
+vivado_*.str
+*.xpr
+*.bit
+*.runs/
+*.cache/
+*.hw/
+*.ip_user_files/
+
+# ModelSim
+work/
+transcript
+vsim.wlf
+*.wlf
+
+# OS
+.DS_Store
+Thumbs.db
