@@ -26,3 +26,12 @@ vsim.wlf
 # OS
 .DS_Store
 Thumbs.db
+# Vivado
+*.jou
+*.log
+*.rpt
+.Xil/
+vivado*.str
+q*.tcl
+sim/*_sim
+sim/*.vcd

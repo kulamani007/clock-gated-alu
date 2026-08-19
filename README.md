@@ -23,14 +23,20 @@ clock-gated-alu/
 │   ├── clock_gate_cell.v        # NAND + Tri-State ICG cell (standalone)
 │   ├── opcode_decoder.v         # 3-to-8 one-hot opcode decoder (standalone)
 │   ├── clock_gated_alu.v        # Design 1: Per-operation clock-gated ALU
-│   └── parallel_alu.v           # Design 2: Dispatch-based parallel ALU
+│   ├── parallel_alu.v           # Design 2: Dispatch-based parallel ALU
+│   └── clock_gated_alu_isolated.v  # Design 3: + selective operand isolation
 │
 ├── sim/
 │   ├── run_sim.sh               # One-command simulation runner
+│   ├── tb_alu_isolated.v        # Testbench for Design 3
 │   └── gtkwave_signals.tcl      # GTKWave signal configuration
 │
+├── syn/
+│   └── vivado_synth.tcl         # Vivado synthesis comparison (Kintex-7)
+│
 ├── docs/
-│   └── architecture_notes.md    # Design decisions and tradeoff analysis
+│   ├── architecture_notes.md    # Design decisions and tradeoff analysis
+│   └── synthesis_results.md     # Measured Vivado + Yosys area comparison
 │
 ├── ppt/
 │   └── ClockGated_ALU_Architecture.pptx  # Full architecture slide deck
@@ -180,6 +186,96 @@ This design with 2 concurrent ops: ~6 mW. **~87% power reduction.**
 ### Stall Behavior
 
 When all instances of a requested operation are busy, the decoder asserts `stall`. The stall is visible combinationally — no pipeline bubble is inserted in this implementation, making it suitable as a base for integration with a scoreboard or reservation station.
+
+---
+
+## Design 3 — Operand Isolation (`clock_gated_alu_isolated.v`)
+
+### The problem clock gating alone does not solve
+
+Clock gating freezes the **result register** of an idle unit. But the
+**combinational logic feeding that register** is still wired directly to
+the operand bus:
+
+```
+A ──┬──────────────► Adder      (evaluates on every A change)
+    ├──────────────► Subtractor (evaluates on every A change)
+    ├──────────────► Multiplier (evaluates on every A change)  ← expensive
+    └──────────────► AND gate   (evaluates on every A change)
+```
+
+Every transition on A or B propagates through **all** combinational trees
+regardless of which unit is selected. This is **glitching power** — in a
+multiplier's partial-product tree it can be 20–30% of that unit's dynamic
+power.
+
+### The fix — AND-gate operand isolation
+
+```verilog
+wire [7:0] A_mul = A & {8{en[2]}};   // 8 AND gates
+wire [7:0] B_mul = B & {8{en[2]}};
+```
+
+When `en[2] = 0` the multiplier sees constant `0 × 0`. The entire
+partial-product tree settles to a stable all-zero state — **zero
+switching activity** regardless of how fast A and B change.
+
+AND gates rather than MUXes: `A & {8{en}}` gives 8 AND gates versus 8
+two-input MUXes for `en ? A : 0` — about half the area, identical
+behaviour.
+
+### Selective application
+
+| Unit | Isolated? | Reason |
+|---|---|---|
+| MUL | Yes | Partial-product tree — deepest logic, biggest win |
+| ADD | Yes | 8-level carry chain |
+| SUB | Yes | 8-level borrow chain |
+| INC / DEC | No | Single ±1 adder, shallow |
+| AND / OR / XOR | No | Single gate level — isolation costs more than it saves |
+
+### Measured synthesis results
+
+**Vivado 2023.2, Kintex-7 `xc7k160tffg676-2`:**
+
+| Design | LUT | FF | CARRY4 |
+|---|---:|---:|---:|
+| Baseline | 129 | 66 | 12 |
+| Isolated | 154 | 66 | 12 |
+| **Delta** | **+25** | **0** | **0** |
+
+**Yosys 0.33, generic gates:**
+
+| Design | Cells | Gate equivalents |
+|---|---:|---:|
+| Baseline | 501 | 907 GE |
+| Isolated | 530 | 940 GE |
+| **Delta** | **+29** | **+33 GE (+3.7%)** |
+
+Flip-flop and carry-chain counts are **identical** in both flows,
+confirming isolation is purely combinational and leaves the clock gating
+architecture untouched.
+
+Full analysis including the SAIF-based power measurement flow:
+[`docs/synthesis_results.md`](docs/synthesis_results.md)
+
+### Verification
+
+```
+[Functional Verification]        9/9 operations PASS
+[Operand Isolation Verification]
+  opcode=ADD, A=FF B=FF
+    A_add = ff  (ADD active — operands pass through)
+    A_mul = 00  (MUL isolated — tree sees zero)
+  opcode=MUL, A=FF B=FF
+    A_mul = ff  (MUL active)
+    A_add = 00  (ADD carry chain isolated)
+[Glitch Suppression Test]
+  A toggled AA → FF → 0F while MUL idle
+    A_mul stayed 00 throughout — ZERO switching  PASS
+
+RESULTS: 12 passed, 0 failed
+```
 
 ---
 
